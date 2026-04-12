@@ -4,7 +4,7 @@
 
 ## **Overview**
 
-`NotArtemonim` is an async Python system in which a language model operates as a full-fledged *participant* in a group Telegram chat — not a command-processing tool. Incoming messages are batched, then the **Router** invokes the LLM, which autonomously decides: whether to participate in the conversation, whether to reply now, and how to update long-term memory. All decisions are persisted in PostgreSQL; a derived compressed-memory layer lives in Markdown files, rebuilt by a background **Librarian**. Operators are provided with a CLI, inline review in DM, a local WebUI, and an optional Telegram Mini App.
+`NotArtemonim` is an async Python system in which a language model operates as a full-fledged *participant* in a group Telegram chat — not a command-processing tool. Incoming messages are batched, then the System calls the **Router** — an LLM agent that autonomously decides: whether to participate in the conversation, whether to reply now, which tools to invoke, and how to update long-term memory. Operational data is persisted in PostgreSQL; multi-layer compressed memory in Markdown files is rebuilt by the **Librarian** agent. Operators are provided with a CLI, inline review in DM, a local WebUI, and an optional Telegram Mini App.
 
 *The project code is proprietary.*
 
@@ -35,25 +35,30 @@
 ## **Key Challenges and Solutions**
 
 *   **"Participant", not "bot":** The goal was to build an LLM agent that lives in a chat as a conversation peer: accumulating context without cross-chat contamination, autonomously deciding when to join a conversation, and retaining commitments between sessions. This is fundamentally different from typical Telegram bots that respond only to explicit commands.
-*   **Scalable context within LLM context limits:** Full chat history does not fit in an LLM context window. The solution is a three-layer memory: an active context window (constrained by message age, count, and batch size); a compressed Markdown memory layer (summary and recorded decisions) managed by the Librarian; and PostgreSQL as the long-term source of truth from which the Librarian rebuilds that Markdown memory.
+*   **Scalable context within LLM context limits:** Full chat history does not fit in an LLM context window. The solution is a multi-layer OpenClaw-like memory: an active context window (constrained by message age, count, and batch size) assembled per batch; a Router scratch accumulating working notes per chat; the Librarian rebuilds compressed summaries and recorded decisions from PostgreSQL; global memory holds cross-chat facts and is populated only through explicit operator-approved promotion. The knowledge base serves as the source of truth for domain knowledge. PostgreSQL is the technical operational store.
 *   **Router decision quality control:** The system persists an explanation for every decision, and operators can review batch→response pairs directly in Telegram (vote, "Why?", disable pair buttons). This creates a closed feedback loop with a full audit trail.
 *   **Prompt injection protection:** The system explicitly separates trusted and untrusted content in the prompt. The provenance of every fragment is tracked; attempts to inject instructions through user messages are detected before the prompt reaches the model.
 
 ### **Architectural and Technical Features**
 
 1.  **Closed-batch Router:**
-    *   Incoming messages are buffered by the Batch Scheduler, then the Router invokes the LLM with the assembled context.
-    *   The Router makes decisions along multiple axes: whether to participate, what to respond, what to save to memory, and which tools to call.
+    *   Incoming messages are buffered by the Batch Scheduler, then the System calls the Router — an LLM agent that makes decisions based on the assembled context.
+    *   The Router itself decides: whether to participate, what to respond, what to save to memory, and which tools to call.
     *   Two group modes are supported: background listening and direct bot address — both pass through the same decision pipeline.
     *   The Router is implemented as a stage chain: policy → shortlist → LLM call → post-processing → persistence → tool execution.
     *   A reasoning-filter mode is available: only the final response is delivered to Telegram, stripping the model's internal reasoning block.
+    *   The architecture is designed for agent roster expansion: in addition to the active Router and Librarian, Scout, Officer, and Triage agents are planned.
 
-2.  **Three-layer memory:**
+2.  **Multi-layer OpenClaw-like memory:**
+    *   The memory architecture follows the OpenClaw principle: Markdown files as auditable, versioned artifacts with strict per-chat / global separation, rather than implicit history in the LLM context.
     *   **Active context window** — assembled dynamically for each batch: constrained by message age, count, and batch size. This is the Router's "working" memory for the current decision.
-    *   **Markdown layer** — derived and sandboxed: the Librarian rebuilds summaries and recorded decisions exclusively from PostgreSQL rows, without accessing the raw archive. Allowed write paths are enforced by the Memory Manager.
-    *   **PostgreSQL** — single source of truth: stores all batch→response pairs, decision cases, operator votes, and chat settings.
+    *   **Router scratch** — per-chat: the Router accumulates working notes through tools; the Librarian deduplicates and compacts the scratch, extracting marked fragments into the recorded-decisions section.
+    *   **Compressed per-chat memory** (summary + recorded decisions) — derived and sandboxed: the Librarian rebuilds it from PostgreSQL rows without accessing the raw archive. Allowed write paths are enforced by the Memory Manager.
+    *   **Global memory** — cross-chat facts; enters here only through explicit operator-approved promotion from per-chat.
+    *   **Knowledge base** — curated source of truth for domain knowledge: the System draws on it alongside chat memory when forming responses.
+    *   **PostgreSQL** — technical operational store: batch→response pairs, decision cases, operator votes, chat settings.
     *   **Hot-state cache:** the Markdown summary is cached by a file fingerprint, eliminating repeated disk reads between batches of the same chat when the file is unchanged.
-    *   **Periodic Librarian:** a background compaction task for Markdown memory from PostgreSQL with configurable limits on pair count, decision case count, and text volume.
+    *   **Periodic Librarian:** a background compaction task for memory from PostgreSQL with configurable limits on pair count, decision case count, and text volume.
 
 3.  **MCP tool gateway:**
     *   Via the MCP adapter, the language model gains access to tools (knowledge base read/write, search, update proposals) within a formal contract.
@@ -61,14 +66,14 @@
     *   After each tool call, chat state consistency is validated.
 
 4.  **Knowledge Base with proposals:**
-    *   Curated knowledge base with an allowlisted set of read/write paths.
-    *   Proposals workflow: the System proposes knowledge base updates, the operator confirms them.
+    *   The curated knowledge base is the source of truth for domain knowledge: the System draws verified facts from it when forming responses. Access is controlled by an allowlisted set of paths.
+    *   Proposals workflow: the System proposes knowledge base updates through tools, the operator confirms them.
     *   Librarian passes and schedule govern rebuild cycles.
 
 5.  **Multimodal inputs:**
     *   When multimodal input support is enabled, media messages are processed through key-frame sampling and a multimodal prompt is assembled for supporting models.
     *   The LLM service supports both text-only and multimodal routes through a unified interface.
-    *   Optional integration with AskVLM — a proprietary Whisper-based transcription tool (closed source) — is available for voice and video message transcription.
+    *   Voice, audio, video, and video-note messages are transcribed via AskVLM — a proprietary Whisper-based transcription tool (closed source).
 
 6.  **Multi-level operator surface:**
     *   **CLI commands**: dependency health check, memory rebuild, aggregated vote statistics, operator vote recording, role management (grant/revoke/list).
@@ -83,7 +88,7 @@
     *   Unhandled errors are automatically delivered to operators in Telegram.
     *   All runtime errors are persisted with context.
     *   Aggregated statistics and metrics are collected by a dedicated module.
-    *   A global outgoing-suppress command mutes visible Telegram actions without stopping message ingestion and batching.
+    *   The `/mute` command (product-admin) deactivates the Router: the System stops processing batches without wasting resources, but continues downloading and storing messages in the database.
 
 8.  **RBAC and ACL:**
     *   MVP product roles: **product-admin** (global access) and **chat-admin** (access limited to assigned chats via row-level table).
@@ -104,9 +109,9 @@
 
 ## **Demonstrated Skills**
 
-*   Designing an LLM agent with a batch-based Router and a deterministic fallback layer
+*   Designing a multi-agent LLM system (Router, Librarian; extensible agent roster)
 *   Async `Python` (`asyncio`, `aiogram 3.x`, `aiohttp`, `asyncpg`, `SQLAlchemy 2.0 async`, `httpx`)
-*   Three-layer persistent memory: `PostgreSQL` (source of truth) + sandboxed Markdown layer + active context window
+*   OpenClaw-like multi-layer memory: active window + Router scratch + compressed per-chat memory + global memory + knowledge base + `PostgreSQL`
 *   `MCP` (Model Context Protocol) integration as an LLM tool gateway
 *   Prompt assembly with explicit trusted/untrusted separation and injection guard
 *   Multimodal LLM pipelines (image processing, key-frame sampling, transcription tool integration)
