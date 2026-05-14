@@ -6,9 +6,9 @@
 
 `NotArtemonim` is an asynchronous Python system in which a language model acts as a full participant and moderator of a group Telegram chat. The bot actively operates in 20+ groups, offloading work from human administrators: it accumulates separate context per chat, makes decisions in batches, replies, stays silent, or applies a moderation action — and gives the operator clear control levers.
 
-![](/media/Router%20Reasoning.png)
-
 The project prioritizes product/runtime maturity: local and cloud inference, multi-layer memory, decision explainability, a feedback loop, operator UX in both Telegram and the browser, strict local CI, and a convenient process lifecycle. The public description intentionally omits internal prompts, exact defensive heuristics, and low-level details that could facilitate abuse, exploitation, or reverse engineering.
+
+![](/media/Router%20Reasoning.png)
 
 *The project's source code is closed.*
 
